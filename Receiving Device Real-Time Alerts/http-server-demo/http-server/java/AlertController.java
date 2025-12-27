@@ -1,10 +1,12 @@
-
-
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Base64;
 
 @Slf4j
 @RestController
@@ -21,6 +23,11 @@ public class AlertController {
     @PostMapping(path = "/alert")
     public void getAlertMsg(@RequestBody AlertMsg alertMsg) {
         log.info("示例接收告警及告警图片：{}", alertMsg);
+        String img = alertMsg.getImage();
+        Files.write(
+                Paths.get(System.currentTimeMillis() + ".jpg"),
+                Base64.getDecoder().decode(img)
+        );
     }
 
     /**
