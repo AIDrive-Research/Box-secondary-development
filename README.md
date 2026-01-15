@@ -30,3 +30,6 @@ A few users require this interface. This method receives **review results from t
 
 ## Heartbeat Monitoring
 A few users require this interface. The sample code helps check whether the device is **online**.
+
+## Image_Source
+The image stream sample code supports invocation via both HTTP and MQTT protocols.
