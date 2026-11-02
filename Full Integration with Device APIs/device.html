@@ -9,15 +9,16 @@
   <link rel="stylesheet" href="public/style.css">
   <script>
     let ZQLGLOBAL = {
-      serverIp: '192.168.1.170',// 修改成您的盒子的IP地址
-      device: `:9092/ks/system/device`, // 视频源增删改查
+      baseUrl: 'http://192.168.1.172:9092',
+      serverIp: '192.168.1.172',// 修改成您的盒子的IP地址
+      device: `/ks/system/device`, // 视频源增删改查
 
       // 登录盒子平台（“系统设置”->“运维系统”->“安全设置”）查看Access Key ID和Access Key Secret
-      accessKey: '69032aad1271cb25e1fd1e99', // 修改成您盒子账号的accessKey
-      accessSecret: '9b200e3a-d8f4-47d8-8eb0-6ff89e81f80c',  // 修改成您盒子账号的accessSecret
+      accessKey: '6ae1c88833742e6614ad35a0', // 修改成您盒子账号的accessKey
+      accessSecret: '85e9b7c9-e09a-42d5-a0ec-aece672c3559',  // 修改成您盒子账号的accessSecret
       token: '',
-      getToken: ':9092/ks/system/user/token',
-      getTime: ':9092/ks/system/time',
+      getToken: '/ks/system/user/token',
+      getTime: '/ks/system/time',
     };
   </script>
 </head>
@@ -67,6 +68,7 @@
   <script src="https://unpkg.com/layui@2.8.18/dist/layui.js"></script>
   <script src="public/jquery-1.10.2.min.js"></script>
   <script type="text/javascript" src="public/crypto-js.js"></script>
+  <script src="api-common.js"></script>
   <script src="device.js"></script>
 </body>
 

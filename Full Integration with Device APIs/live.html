@@ -9,21 +9,20 @@
   <link href="live.css" rel="stylesheet">
   <script>
     let ZQLGLOBAL = {
-      serverIp: '192.168.1.170',// 修改成您的盒子的IP地址      
-      getSources: `:9092/ks/source`,
-      subscribe: `:9092/stream/live/subscribe`,
+      serverIp: '192.168.1.172',// 修改成您的盒子的IP地址      
+      baseUrl: 'http://192.168.1.172:9092', // 接口、MQTT、WebRTC 统一地址
+      getSources: `/ks/source`,
+      subscribe: `/stream/live/subscribe`,
       resultTopic: 'ks/video_detection', //实时检测结果
       streamInfoTopic: 'ks/stream_local',// 视频流状态变更信息，可监测流状态、分辨率变化
-      media_http_api: 1985, // 画面播放
-      websocket: 8083, // mqtt消息
       mqttAuth:['work','Bjhmdys@202010'], // mqtt账号密码
 
       // 登录盒子平台（“系统设置”->“运维系统”->“安全设置”）查看Access Key ID和Access Key Secret
-      accessKey: '69032aad1271cb25e1fd1e99', // 修改成您盒子账号的accessKey
-      accessSecret: '9b200e3a-d8f4-47d8-8eb0-6ff89e81f80c',  // 修改成您盒子账号的accessSecret
+      accessKey: '6ae1c88833742e6614ad35a0', // 修改成您盒子账号的accessKey
+      accessSecret: '85e9b7c9-e09a-42d5-a0ec-aece672c3559',  // 修改成您盒子账号的accessSecret
       token: '',
-      getToken: ':9092/ks/system/user/token',
-      getTime: ':9092/ks/system/time',
+      getToken: '/ks/system/user/token',
+      getTime: '/ks/system/time',
     };
 
     let ZQL_videosInfos = { 0: null, 1: null, 2: null, 3: null };
@@ -65,7 +64,12 @@
       if (res.error_code == 0) {
         ZQLGLOBAL.token = res.data;
         init();
+      } else {
+        throw new Error(res.message || '获取Token失败，请检查当前设备的Access Key/Secret');
       }
+    }).catch(err => {
+      console.error('初始化失败', err);
+      document.getElementById('ZQL_source_tree').textContent = err.message || '连接失败，请检查设备地址和网络';
     })
 
   </script>

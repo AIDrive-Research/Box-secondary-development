@@ -1,3 +1,13 @@
+// 接口、MQTT 和 WebRTC 统一通过设备 9092 端口访问，AK/SK 签名鉴权保持不变。
+const ZQL_origin = () => {
+  const url = new URL(ZQLGLOBAL.baseUrl || `http://${ZQLGLOBAL.serverIp}`);
+  url.port = '9092';
+  return url.origin;
+};
+const ZQL_escape = value => String(value == null ? '' : value).replace(/[&<>"']/g,
+  ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const ZQL_apiUrl = path => new URL(path.replace(/^:\d+/, ''), ZQL_origin()).href;
+
 
 const ZQL_multivideo = {
   setVideoEl: () => {
@@ -76,38 +86,28 @@ const ZQL_multivideo = {
     }
   },
   setAlgList(index) {
-    let el = document.querySelector(`#video-title${index}`);
-    let algList = ZQL_sources[ZQL_playingSource[index]].alg;
-    let algEl = '<ul>';
-    for (let alg in algList) {
-      let name = algList[alg].reserved_args.display_name;
-      algEl = algEl + `<li alg="${alg}" index="${index}">${name}</li>`
-    }
-    algEl = algEl + '</ul>'
-    el.innerHTML = `
-      <div class="camera">${ZQL_sources[ZQL_playingSource[index]].desc}</div>
-      <div class="alg">      
-        <div class="algname">算法: ${ZQL_playingSource[index].alg ? ZQL_sources[ZQL_playingSource[index]].alg[alg].reserved_args.display_name : ''}</div>
-        ${algEl}
-      </div>
-      <div id="close${index}">关闭</div>
-    `;
-    el.querySelectorAll('li').forEach(item => {
-      item.addEventListener('click', (e) => {
-        let index = e.currentTarget.getAttribute("index");
-        let alg = e.currentTarget.getAttribute("alg")
-        ZQL_videosInfos[index].alg = alg;
-        let videlel = document.querySelector(`#video-title${index}`);
-        videlel.querySelector(".algname").innerHTML = '算法：' + ZQL_sources[ZQL_playingSource[index]].alg[alg].reserved_args.display_name
-      })
-    })
+    const source = ZQL_sources[ZQL_playingSource[index]];
+    const info = ZQL_videosInfos[index];
+    const el = document.querySelector(`#video-title${index}`);
+    const algorithms = Object.keys(source.alg || {});
+    if (!info.alg || !source.alg[info.alg]) info.alg = algorithms[0] || null;
+    const name = alg => (source.alg[alg].reserved_args || {}).display_name || alg;
+    el.innerHTML = `<div class="camera">${ZQL_escape(source.desc)}</div>
+      <div class="alg"><div class="algname">算法: ${ZQL_escape(info.alg ? name(info.alg) : '无')}</div>
+      <ul>${algorithms.map(alg => `<li alg="${ZQL_escape(alg)}">${ZQL_escape(name(alg))}</li>`).join('')}</ul></div>
+      <div id="close${index}">关闭</div>`;
+    el.querySelectorAll('li').forEach(item => item.addEventListener('click', () => {
+      info.alg = item.getAttribute('alg');
+      ZQL_multivideo.clearCanvas(index);
+      el.querySelector('.algname').textContent = '算法: ' + name(info.alg);
+    }));
     document.querySelector(`#close${index}`).addEventListener('click', () => {
+      source.checked = false;
+      ZQL_playingSource[index] = null;
+      ZQL_multivideo.destroyVideoByIndex(index);
       ZQL_multivideo.clearAlgList(index);
       ZQL_multivideo.liveStopLoading(index);
-      ZQL_multivideo.destroyVideoByIndex(index);
-      ZQL_playingSource[index] = null;
-      ZQL_videosInfos[index] = null;
-    })
+    });
   },
   clearAlgList(index) {
     let el = document.querySelector(`#video-title${index}`);
@@ -133,161 +133,87 @@ const ZQL_multivideo = {
         clearTimeout(ZQL_videosInfos[index].replayTimer);
         ZQL_videosInfos[index].replayTimer = null;
       }
-      ZQL_videosInfos[index] &&
-        ZQL_videosInfos[index].srsrtc &&
-        ZQL_videosInfos[index].srsrtc.close();
+      const player = ZQL_videosInfos[index].srsrtc;
       ZQL_videosInfos[index].srsrtc = null;
+      if (player) player.close();
       ZQL_videosInfos[index].status = "";
       ZQL_multivideo.playVideo(ZQL_playingSource[index], index);
     }
   },
   subscribeLive(cameraId, index) {
     ZQL_multivideo.getCameraSize(cameraId, index);
+    const info = ZQL_videosInfos[index];
+    if (!info) return;
     ZQL_multivideo.liveLoading(index);
-    ZQL_apis
-      .subscribeLive(
-        // ZQL_sources[cameraId].deviceId,
-        // ZQL_sources[cameraId].sourceId
-        cameraId
-      )
-      .then((data) => {
-        let stream = data.data;
-        if (data && stream) {
-          ZQL_videosInfos[index].stream = stream;
-          ZQL_multivideo.playVideo(cameraId, index);
-        } else {
-          if (ZQL_playingSource[index] == cameraId) {
-            ZQL_multivideo.liveOffline(index);
-            // ZQL_videosInfos[index].status = "离线";
-            // ZQL_videosInfos[index].loading = false;
-            // this.reSubcribe(cameraId, index);
-          }
-        }
-      })
-      .catch((err) => {
-        if (
-          ZQL_playingSource[index] == cameraId &&
-          ZQL_videosInfos[index]
-        ) {
-          ZQL_multivideo.liveOffline(index);
-          // ZQL_videosInfos[index].status = "离线";
-          // ZQL_videosInfos[index].loading = false;
-          // this.reSubcribe(cameraId, index);
-        }
-      });
+    return ZQL_apis.subscribeLive(cameraId).then(data => {
+      if (ZQL_videosInfos[index] !== info || ZQL_playingSource[index] !== cameraId) return;
+      if (!data || data.error_code !== 0 || typeof data.data !== 'string' || !data.data) {
+        throw new Error((data || {}).message || '订阅失败');
+      }
+      info.stream = data.data;
+      info.status = '';
+      ZQL_multivideo.playVideo(cameraId, index);
+    }).catch(() => {
+      if (ZQL_videosInfos[index] !== info || ZQL_playingSource[index] !== cameraId) return;
+      info.status = '离线';
+      ZQL_multivideo.liveOffline(index);
+      ZQL_multivideo.reSubcribe(cameraId, index);
+    });
   },
   playVideo(cameraId, index) {
-    if (ZQL_videosInfos[index].srsrtc) {
-      return;
-    }
-    ZQL_videosInfos[index].loading = true;
-
-    let video = document.getElementById("video" + index);
-    let data_stream = ZQL_videosInfos[index].stream.replace('127.0.0.1', ZQLGLOBAL.serverIp);
-
-    var srsrtc = new ZLMRTCClient.Endpoint({
-        element: video, // video 标签
-        debug: false, // 是否打印日志
-        zlmsdpUrl: data_stream, //流地址
-        simulcast: false,
-        useCamera: true,
-        audioEnable: true,
-        videoEnable: true,
-        recvOnly: true,
-        resolution: { w: 1280, h: 720 },
-        usedatachannel: false,
-        videoId: "", // 不填选择默认的:空字符串
-        audioId: "", // 不填选择默认的：空字符串
-      });
-      srsrtc.on(
-        ZLMRTCClient.Events.WEBRTC_OFFER_ANWSER_EXCHANGE_FAILED,
-        (e) => {
-          // offer anwser 交换失败
-          console.log("offer anwser 交换失败: index=", index, e);
-          if (e.code == -400 && e.msg == "stream not found") {
-            console.log(
-              `---------------- 重新订阅${index} -------------------------`
-            );
-            if (ZQL_sources[cameraId].type == "video") {
-              ZQL_multivideo.handleReplayVideo(index);
-            } else {
-              ZQL_multivideo.destroyVideoByIndex(index);
-              ZQL_multivideo.getCameraSize(ZQL_playingSource[index], index);
-              ZQL_multivideo.videoSubscribe(ZQL_playingSource[index], index);
-            }
-          }
-        }
-      );
-      srsrtc.on(ZLMRTCClient.Events.WEBRTC_ON_REMOTE_STREAMS, (e) => {
-        //获取到了远端流，可以播放
-        // console.log("播放成功", e.streams);
-        // console.log(`index=${index}`,player);
-        ZQL_multivideo.liveStopLoading(index);
-        ZQL_videosInfos[index].playerState = "success";
-        ZQL_videosInfos[index].loading = false;
-        ZQL_videosInfos[index].startTime = new Date().getTime();
-
-        if (ZQL_videosInfos[index].refreshTimeInterval) {
-          clearInterval(ZQL_videosInfos[index].refreshTimeInterval);
-        }
-        ZQL_videosInfos[index].refreshTime = parseInt(
-          (Math.random() * 5 + 5) * 1000 * 6
-        );
-
-        // this.videosInfos[index].refreshTimeInterval = setInterval(() => {
-        //   console.log(`index=${index}, player=`,this.videosInfos[index].srsrtc);
-        //   this.handleRefresh(index);
-        // }, this.videosInfos[index].refreshTime);
-      });
-      srsrtc.on(ZLMRTCClient.Events.WEBRTC_ON_CONNECTION_STATE_CHANGE, (e) => {
-        console.log("WEBRTC_ON_CONNECTION_STATE_CHANGE: index=", index, e);
-        if (e == "failed") {
-          console.log(
-            `${index}已运行${
-              (new Date().getTime() - ZQL_videosInfos[index].startTime) / 1000
-            }秒`
-          );
-
-          if (ZQL_sources[cameraId].type == "video") {
-            console.log(
-              `---------------- 重新推流${index} -------------------------`
-            );
-            ZQL_multivideo.handleReplayVideo(index);
-          } else {
-            console.log(
-              `---------------- 重新播放${index} -------------------------`
-            );
-            ZQL_multivideo.handleRefresh(index);
-          }
-        }
-        if (e == "disconnected") {
-          console.log(
-            `---------------- 重新播放${index} -------------------------`
-          );
-          ZQL_multivideo.handleRefresh(index);
-        }
-      });
-    ZQL_videosInfos[index].srsrtc = srsrtc;
+    const info = ZQL_videosInfos[index];
+    if (!info || info.srsrtc || ZQL_playingSource[index] !== cameraId) return;
+    const video = document.getElementById('video' + index);
+    const streamUrl = new URL(info.stream, ZQL_origin());
+    // 内部流媒体地址统一转到设备的 Nginx WebRTC 代理，保留查询参数。
+    const data_stream = new URL(streamUrl.pathname + streamUrl.search, ZQL_origin()).href;
+    info.loading = true;
+    const player = new ZLMRTCClient.Endpoint({
+      element: video, debug: false, zlmsdpUrl: data_stream,
+      simulcast: false, useCamera: true, audioEnable: true, videoEnable: true,
+      recvOnly: true, resolution: { w: 1280, h: 720 },
+      usedatachannel: false, videoId: '', audioId: ''
+    });
+    info.srsrtc = player;
+    const current = () => ZQL_videosInfos[index] === info &&
+      ZQL_playingSource[index] === cameraId && info.srsrtc === player;
+    const retry = () => {
+      if (!current()) return;
+      info.srsrtc = null;
+      player.close();
+      info.status = '离线';
+      ZQL_multivideo.liveOffline(index);
+      ZQL_multivideo.reSubcribe(cameraId, index);
+    };
+    video.onplaying = () => {
+      if (!current()) return;
+      info.loading = false;
+      info.status = '';
+      info.playerState = 'success';
+      ZQL_multivideo.liveStopLoading(index);
+    };
+    player.on(ZLMRTCClient.Events.WEBRTC_OFFER_ANWSER_EXCHANGE_FAILED, retry);
+    player.on(ZLMRTCClient.Events.WEBRTC_ON_CONNECTION_STATE_CHANGE, state => {
+      if (state === 'failed' || state === 'disconnected') retry();
+    });
   },
-
   reSubcribe(cameraId, index) {
-    if (ZQL_videosInfos[index].subscribeTimeout) {
-      clearTimeout(ZQL_videosInfos[index].subscribeTimeout);
-      ZQL_videosInfos[index].subscribeTimeout = null;
-    }
-    ZQL_multivideo.videosInfos[index].subscribeTimeout = setTimeout(() => {
-      ZQL_multivideo.subscribeLive(cameraId, index);
-    }, 1000);
+    const info = ZQL_videosInfos[index];
+    if (!info) return;
+    clearTimeout(info.subscribeTimeout);
+    info.subscribeTimeout = setTimeout(() => {
+      if (ZQL_videosInfos[index] === info && ZQL_playingSource[index] === cameraId) {
+        ZQL_multivideo.subscribeLive(cameraId, index);
+      }
+    }, 3000);
   },
   getCameraSize(id, index) {
-    ZQL_multivideo.setOrisize(
-      ZQL_sources[id].stream.image_size.draw[0],
-      ZQL_sources[id].stream.image_size.draw[1],
-      index, id
-    );
+    const stream = ZQL_sources[id].stream || {};
+    const size = (stream.image_size || {}).draw || [1280, 720];
+    ZQL_multivideo.setOrisize(size[0] || 1280, size[1] || 720, index, id);
   },
   setOrisize(width, height, index, id) {
-    let container = document.querySelector(".video-box");
+    let container = document.getElementById("video" + index).parentElement;
     if (!container) {
       return;
     }
@@ -340,7 +266,7 @@ const ZQL_multivideo = {
     }
   },
   setPosition(index) {
-    let container = document.querySelector(".video-box");
+    let container = document.getElementById("video" + index).parentElement;
     let video = document.querySelector("#video" + index);
     let canvas = document.getElementById("canvas" + index);
     let width = ZQL_videosInfos[index].actualWidth, height = ZQL_videosInfos[index].actualHeight;
@@ -378,7 +304,9 @@ const ZQL_multivideo = {
       return;
     }
     // let bbox = data.result.data.bbox;
-    let bbox = data.bbox;
+    let bbox = data && data.bbox;
+    if (!bbox) return;
+    bbox = Object.assign({ polygons: {}, rectangles: [], lines: {} }, bbox);
     if (Object.values(bbox.polygons).length > 0) {
       Object.values(bbox.polygons).forEach((item) => {
         let color = JSON.parse(JSON.stringify(item.color)).reverse();
@@ -550,6 +478,7 @@ const ZQL_multivideo = {
   drawCountingInfo(context, lines) {
     lines.forEach((item, index) => {
       context.fillStyle = "rgb(255,0,0)";
+      if (!item.ext || !item.ext.direction || !item.ext.action || !item.ext.result) return;
       if (item.ext.direction.length == 2) {
         context.fillText(`[${item.name}] ${item.ext.action.count}: ${item.ext.result.count}`, 0, 20 * index + 20);
       } else {
@@ -576,7 +505,7 @@ const ZQL_multivideo = {
         (leftPoint[1] * ZQL_videosInfos[videoindex].actualHeight) /
         ZQL_videosInfos[videoindex].oriHeight + 20
       );
-      if (item.ext.result) {
+      if (item.ext && item.ext.result) {
         context.fillStyle = "rgb(255,0,0)";
         context.fillText(`${item.name}: ${item.ext.result}`, 0, 20 * index + 20);
       }
@@ -605,12 +534,15 @@ const ZQL_multivideo = {
         clearInterval(ZQL_videosInfos[index].refreshTimeInterval);
         ZQL_videosInfos[index].refreshTimeInterval = null;
       }
-      let video = document.getElementById("video" + index);
-      video && (video.srcObject = null);
-      ZQL_videosInfos[index].srsrtc &&
-        ZQL_videosInfos[index].srsrtc.close();
-      ZQL_multivideo.clearCanvas(index);
+      const info = ZQL_videosInfos[index];
       ZQL_videosInfos[index] = null;
+      clearTimeout(info.canvasTimeout);
+      let video = document.getElementById("video" + index);
+      if (video) { video.onplaying = null; video.srcObject = null; }
+      const player = info.srsrtc;
+      info.srsrtc = null;
+      if (player) player.close();
+      ZQL_multivideo.clearCanvas(index);
     }
   },
   clearCanvas(index) {
@@ -618,14 +550,20 @@ const ZQL_multivideo = {
     if (canvas && canvas.getContext("2d")) {
       canvas
         .getContext("2d")
-        .clearRect(0, 0, canvas.offsetWidth, canvas.offsetHeight);
+        .clearRect(0, 0, canvas.width, canvas.height);
     }
   },
   connectMqtt() {
-    let mqttclient = mqtt.connect(`ws://${ZQLGLOBAL.serverIp}:${ZQLGLOBAL.websocket}/mqtt`, {
+    if (ZQL_multivideo.mqttclient) return;
+    const mqttUrl = new URL('/mqtt', ZQL_origin());
+    mqttUrl.protocol = mqttUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+    let mqttclient = mqtt.connect(mqttUrl.href, {
       username: ZQLGLOBAL.mqttAuth[0],
       password: ZQLGLOBAL.mqttAuth[1],
     });
+    ZQL_multivideo.mqttclient = mqttclient;
+    mqttclient.on('error', error => console.error('MQTT连接失败', error.message));
+    mqttclient.on('connect', () => {
     mqttclient.subscribe(
       ZQLGLOBAL.resultTopic,
       { qos: 0 },
@@ -646,9 +584,12 @@ const ZQL_multivideo = {
         }
       }
     );
+    });
     mqttclient.on("message", (topic, payload) => {
-      let msg = JSON.parse(payload.toString());
-      if (msg.msg_type == "video_detection") {
+      let msg;
+      try { msg = JSON.parse(payload.toString()); } catch (_) { return; }
+      if (!msg || !msg.data) return;
+      if (msg.msg_type == "video_detection" && msg.data.source && msg.data.alg) {
         let id = msg.data.source.id;
         for (let i = 0; i < 4; i++) {
           if (ZQL_videosInfos[i]) {
@@ -671,8 +612,26 @@ const ZQL_multivideo = {
           }
         }
       }
-      if(topic == "ks/stream_local")
-        console.log(msg.data.stream)
+      if (topic === ZQLGLOBAL.streamInfoTopic && msg.data.stream) {
+        const source = ZQL_sources[msg.data.id];
+        if (source) source.stream = msg.data.stream;
+        for (let i = 0; i < ZQL_playingSource.videoNum; i++) {
+          if (ZQL_playingSource[i] !== msg.data.id || !ZQL_videosInfos[i]) continue;
+          const info = ZQL_videosInfos[i];
+          ZQL_multivideo.getCameraSize(msg.data.id, i);
+          if (msg.data.stream.is_online === false) {
+            const player = info.srsrtc;
+            info.srsrtc = null;
+            if (player) player.close();
+            info.status = '离线';
+            ZQL_multivideo.liveOffline(i);
+            ZQL_multivideo.reSubcribe(msg.data.id, i);
+          } else if (info.status === '离线') {
+            clearTimeout(info.subscribeTimeout);
+            ZQL_multivideo.subscribeLive(msg.data.id, i);
+          }
+        }
+      }
     });
   }
 }
@@ -683,7 +642,7 @@ const ZQL_apis = {
       $.ajax({
         type: "GET",
         dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.getSources}`,
+        url: ZQL_apiUrl(ZQLGLOBAL.getSources),
         beforeSend: function (xhr) {
           xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
         },
@@ -701,7 +660,7 @@ const ZQL_apis = {
       $.ajax({
         type: "GET",
         dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.subscribe}?source_id=${source_id}`,
+        url: ZQL_apiUrl(ZQLGLOBAL.subscribe) + `?source_id=${encodeURIComponent(source_id)}`,
         beforeSend: function (xhr) {
           xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
         },
@@ -718,6 +677,7 @@ const ZQL_apis = {
     var ak = ZQLGLOBAL.accessKey;
     var sk = ZQLGLOBAL.accessSecret;
     var timestampRes = await ZQL_apis.getTimestamp();
+    if (timestampRes.error_code !== 0) throw new Error(timestampRes.message || '获取时间戳失败');
     let timestamp = timestampRes.data;
     var nonce = ZQL_apis.generateRandomString(10);
     let signature = ZQL_apis.generateSignature(ak, sk, timestamp, nonce)
@@ -725,7 +685,7 @@ const ZQL_apis = {
       $.ajax({
         type: "GET",
         dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.getToken}?signature=${signature}&ak=${ak}&timestamp=${timestamp}&nonce=${nonce}`,
+        url: ZQL_apiUrl(ZQLGLOBAL.getToken) + `?signature=${encodeURIComponent(signature)}&ak=${encodeURIComponent(ak)}&timestamp=${timestamp}&nonce=${nonce}`,
         success: function (res) {
           resolve(res)
         },
@@ -740,7 +700,7 @@ const ZQL_apis = {
       $.ajax({
         type: "GET",
         dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.getTime}`,
+        url: ZQL_apiUrl(ZQLGLOBAL.getTime),
         success: function (res) {
           resolve(res)
         },
@@ -785,10 +745,14 @@ function init() {
 
   // 1. 获取摄像头列表
   Promise.all([ZQL_apis.getSources()]).then(res => {
+    if (res[0].error_code !== 0 || !Array.isArray(res[0].data)) {
+      throw new Error(res[0].message || '获取摄像头失败');
+    }
     let cameras = res[0].data.map(item => {
+      item.alg = item.alg || {};
       item.sourceId = item.id;
       item.title = item.desc;
-      item.type = 'source';
+      // 保留接口的 source.type，供视频源逻辑使用。
       item.checked = false;
       ZQL_sources[item.id] = item
       return item
@@ -806,8 +770,13 @@ function init() {
           if (obj.data.sourceId) {
             let key = obj.data.sourceId;
             if (ZQL_sources[key].checked == false) {
+              if (ZQL_playingSource.videoNum > 1 &&
+                  !Array.from({length: ZQL_playingSource.videoNum}, (_, i) => ZQL_playingSource[i]).includes(null)) return;
               ZQL_sources[key].checked = true
               if (ZQL_playingSource.videoNum == 1) {
+                const previous = ZQL_playingSource[0];
+                if (previous != null) ZQL_sources[previous].checked = false;
+                ZQL_multivideo.destroyVideoByIndex(0);
                 ZQL_playingSource[0] = key;
                 ZQL_multivideo.subscribeLive(key, 0);
                 ZQL_multivideo.setAlgList(0);
@@ -844,9 +813,19 @@ function init() {
       });
     });
   }).catch(err => {
-    console.log(err)
+    console.error('获取摄像头列表失败', err);
+    document.getElementById('ZQL_source_tree').textContent = err.message || '获取摄像头列表失败';
   })
   // 通过mqtt获取实时检测结果和视频流状态信息
   ZQL_multivideo.connectMqtt()
   
 }
+window.addEventListener('resize', () => {
+  for (let i = 0; i < ZQL_playingSource.videoNum; i++) {
+    if (ZQL_videosInfos[i]) ZQL_multivideo.getCameraSize(ZQL_playingSource[i], i);
+  }
+});
+window.addEventListener('beforeunload', () => {
+  ZQL_multivideo.destroyVideo(ZQL_playingSource.videoNum);
+  if (ZQL_multivideo.mqttclient) ZQL_multivideo.mqttclient.end(true);
+});

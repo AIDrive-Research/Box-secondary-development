@@ -1,3 +1,18 @@
+const sourceApis = {
+  getSources: () => DemoApi.request('GET', ZQLGLOBAL.source),
+  getAlgs: () => DemoApi.request('GET', ZQLGLOBAL.alg),
+  getAlgJson: name => DemoApi.request('GET', `${ZQLGLOBAL.algsjson}/zh/${encodeURIComponent(name)}.json`, undefined, undefined, true),
+  getAttr: stream => DemoApi.request('GET', ZQLGLOBAL.attr, undefined, {stream}),
+  addSource: data => DemoApi.request('POST', ZQLGLOBAL.source, data),
+  editSource: data => DemoApi.request('PUT', ZQLGLOBAL.source, data),
+  delSource: data => DemoApi.request('DELETE', ZQLGLOBAL.source, {ids: data.ids || [data.id]}),
+  getGrpup: alg => DemoApi.request('GET', ZQLGLOBAL.group, undefined, {alg}),
+  getToken: () => DemoApi.getToken(),
+  getTimestamp: () => DemoApi.request('GET', ZQLGLOBAL.getTime),
+  generateSignature: DemoApi.generateSignature,
+  generateRandomString: DemoApi.generateRandomString
+};
+
 // Layui表格数据管理类
 class LayuiTableManager {
   constructor() {
@@ -14,7 +29,7 @@ class LayuiTableManager {
     this.initLayui();
     this.bindEvents();
     await sourceApis.getAlgs().then(res => {
-      res.data.forEach(alg => {
+      res.data.filter(alg => alg.config && Object.keys(alg.config).length).forEach(alg => {
         this.alg[alg.name] = alg
       })
     })
@@ -79,12 +94,13 @@ class LayuiTableManager {
     sourceApis.getSources().then(res => {
       this.data = res.data.filter(item => item.type == 'stream').map(item => {
         if (item.alg) {
-          item.alg_ch_names = Object.keys(item.alg).map(alg_name => this.alg[alg_name].config.display_name).join(',')
+          item.alg_ch_names = Object.keys(item.alg).map(alg_name => (this.alg[alg_name] ? this.alg[alg_name].config.display_name : (item.alg[alg_name].reserved_args || {}).display_name) || alg_name).join(',')
         } else {
           item.alg = {}
         }
-        item.streamInfo = JSON.parse(JSON.stringify(item.stream));
-        item.stream = item.detail.stream_url;
+        item.streamInfo = JSON.parse(JSON.stringify(item.stream || {}));
+        item.stream = (item.detail || {}).stream_url || '';
+        item.encoding = (item.streamInfo || {}).encoding || '';
         return item
       });
       if (this.table) {
@@ -183,9 +199,15 @@ class LayuiTableManager {
           form.on('submit(detect)', (formData) => {
             sourceApis.getAttr(formData.field.stream).then(res => {
               if(res.error_code == 0){
-                data.id = res.data.stream;
-                data.streamInfo = res.data;
-                this.handleAdd(formData.field, data, res.data);
+                if (type === 'edit') {
+                  data.streamInfo = res.data;
+                  data.stream = formData.field.stream;
+                  this.showNotification('流信息已获取，点击保存提交修改');
+                } else if (!data.id) {
+                  this.handleAdd(formData.field, data, res.data);
+                } else {
+                  this.showNotification('视频源已接入，请点击保存', 'error');
+                }
               } else {
                 this.showNotification(res.message, 'error');
               }
@@ -204,7 +226,8 @@ class LayuiTableManager {
             for (let i = 0; i < algEls.length; i++) {
               if (algEls[i].checked == true && !data.alg[algEls[i].name]) {
                 ((alg) => {
-                  sourceApis.getAlgJson(alg).then(res => {
+                  data.loadingAlgs = (data.loadingAlgs || 0) + 1;
+                  sourceApis.getAlgJson(alg).then(async res => {
                     this.showNotification(`${alg}参数获取成功`);
                     // 算法配置文件中的basicParams为需要保存到后台的参数
                     data.alg[alg] = JSON.parse(JSON.stringify(res.basicParams));
@@ -233,10 +256,10 @@ class LayuiTableManager {
                     }
 
                     // 如果算法类型为match_开头，说明需要配置底库分组
-                    if (data.alg[alg].alg_type.indexOf('match_') >= 0) {
+                    if ((data.alg[alg].alg_type || '').indexOf('match_') >= 0) {
                       let lib_type = data.alg[alg].alg_type.replace('match_', '');
                       // 获取对应算法的底库组
-                      sourceApis.getGrpup(lib_type).then(res => {
+                      await sourceApis.getGrpup(lib_type).then(res => {
                         if (res.data.length > 0) {
                           let groupId = res.data[0].id;
                           data.alg[alg].reserved_args.group_id = groupId;
@@ -245,7 +268,7 @@ class LayuiTableManager {
                         }
                       })
                     }
-                  })
+                  }).finally(() => { data.loadingAlgs--; });
                 })(algEls[i].name);
               }
             }
@@ -286,6 +309,9 @@ class LayuiTableManager {
       }
     }
     sourceApis.addSource(params).then(res => {
+      data.id = streamInfo.stream;
+      data.streamInfo = streamInfo;
+      data.stream = formData.stream;
       this.getTableData();
       this.showNotification('数据添加成功！');
       // 关闭模态框
@@ -295,9 +321,28 @@ class LayuiTableManager {
     })
   }
   handleEdit(formData, data) {
+    if (data.loadingAlgs) {
+      this.showNotification('算法参数仍在加载，请稍后保存', 'error');
+      return;
+    }
+    if (data.stream && data.stream !== formData.stream) {
+      this.showNotification('流地址已更改，请先接入并保存流信息', 'error');
+      return;
+    }
+    if (!data.id || !data.streamInfo) {
+      this.showNotification('请先接入并保存流信息', 'error');
+      return;
+    }
+    const missing = Array.from(document.querySelectorAll('#sel-algs-container input'))
+      .some(el => el.checked && !data.alg[el.name]);
+    if (missing) {
+      this.showNotification('请先获取并等待算法参数加载完成', 'error');
+      return;
+    }
     let params = {
-      id: data.id,
-      alg: data.alg,
+      id: data.id, desc: formData.desc, alg: data.alg,
+      stream: data.streamInfo,
+      detail: Object.assign({}, data.detail || {}, {stream_url: formData.stream})
     }
     sourceApis.editSource(params).then(res => {
       this.getTableData();
@@ -312,7 +357,7 @@ class LayuiTableManager {
   // 验证数据
   validateData(data) {
     if (!data.desc || data.desc.length < 2) {
-      this.showNotification('描述不能重复', 'error');
+      this.showNotification('描述至少需要两个字符', 'error');
       return false;
     }
     return true;
@@ -357,203 +402,3 @@ layui.use(['table', 'layer', 'form'], () => {
 
 });
 
-const sourceApis = {
-  getSources: () => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.source}`,
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  getAlgs: () => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.alg}`,
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  getAlgJson: (alg_name) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.algsjson}/zh/${alg_name}.json`,
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  getAttr: (stream) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.attr}?stream=${stream}`,
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  addSource: (data) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "POST",
-        contentType: "application/json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.source}`,
-        data: JSON.stringify(data),
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  editSource: (data) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "PUT",
-        contentType: "application/json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.source}`,
-        data: JSON.stringify(data),
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  delSource: (data) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "DELETE",
-        contentType: "application/json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.source}`,
-        data: JSON.stringify(data),
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  getGrpup: (type) => {
-    // 获取底库分组
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.group}?alg=${type}`,
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-
-  getToken: async () => {
-    var ak = ZQLGLOBAL.accessKey;
-    var sk = ZQLGLOBAL.accessSecret;
-    var timestampRes = await sourceApis.getTimestamp();
-    let timestamp = timestampRes.data;
-    var nonce = sourceApis.generateRandomString(10);
-    let signature = sourceApis.generateSignature(ak, sk, timestamp, nonce)
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.getToken}?signature=${signature}&ak=${ak}&timestamp=${timestamp}&nonce=${nonce}`,
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  getTimestamp: () => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.getTime}`,
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  generateSignature: (ak, sk, timestamp, nonce) => {
-    var message = `${ak}:${timestamp}:${nonce}`;
-    var hash = CryptoJS.HmacSHA256(message, sk);
-    var signature = CryptoJS.enc.Hex.stringify(hash);
-    return signature
-  },
-  generateRandomString(length) {
-    let result = '';
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-
-    for (let i = 0; i < length; i++) {
-      result += characters.charAt(Math.floor(Math.random() * characters.length));
-    }
-
-    return result;
-  }
-}

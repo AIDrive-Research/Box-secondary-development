@@ -1,3 +1,13 @@
+const deviceApis = {
+  getDeviceInfo: () => DemoApi.request('GET', ZQLGLOBAL.device),
+  editDeviceInfo: data => DemoApi.request('PUT', ZQLGLOBAL.device,
+    {device_name: data.device_name, device_desc: data.device_desc}),
+  getToken: () => DemoApi.getToken(),
+  getTimestamp: () => DemoApi.request('GET', ZQLGLOBAL.getTime),
+  generateSignature: DemoApi.generateSignature,
+  generateRandomString: DemoApi.generateRandomString
+};
+
 class deviceInfo {
   constructor() {
     this.info = {};
@@ -16,9 +26,13 @@ class deviceInfo {
       var form = layui.form;
       form.val('deviceForm', this.info);
       form.on('submit(saveData)', (formData) => {
-        deviceApis.editDeviceInfo(Object.assign(this.info, formData.field)).then(res => {
-          console.log(res)
-        })
+        layui.layer.confirm('保存设备信息后设备将自动重启，是否继续？', {icon: 3}, index => {
+          layui.layer.close(index);
+          deviceApis.editDeviceInfo(formData.field).then(() => {
+            this.info = Object.assign({}, this.info, formData.field);
+            layui.layer.msg('保存成功，设备正在重启');
+          });
+        });
         return false;
       });
     })
@@ -37,95 +51,3 @@ layui.use(['layer', 'form'], () => {
 
 });
 
-const deviceApis = {
-  getDeviceInfo: () => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.device}`,
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  editDeviceInfo: (data) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "PUT",
-        contentType: "application/json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.device}`,
-        data: JSON.stringify(data),
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-
-  getToken: async () => {
-    var ak = ZQLGLOBAL.accessKey;
-    var sk = ZQLGLOBAL.accessSecret;
-    var timestampRes = await deviceApis.getTimestamp();
-    let timestamp = timestampRes.data;
-    var nonce = deviceApis.generateRandomString(10);
-    let signature = deviceApis.generateSignature(ak, sk, timestamp, nonce)
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.getToken}?signature=${signature}&ak=${ak}&timestamp=${timestamp}&nonce=${nonce}`,
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  getTimestamp: () => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.getTime}`,
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  generateSignature: (ak, sk, timestamp, nonce) => {
-    var message = `${ak}:${timestamp}:${nonce}`;
-    var hash = CryptoJS.HmacSHA256(message, sk);
-    var signature = CryptoJS.enc.Hex.stringify(hash);
-    return signature
-  },
-  generateRandomString(length) {
-    let result = '';
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-
-    for (let i = 0; i < length; i++) {
-      result += characters.charAt(Math.floor(Math.random() * characters.length));
-    }
-
-    return result;
-  }
-}

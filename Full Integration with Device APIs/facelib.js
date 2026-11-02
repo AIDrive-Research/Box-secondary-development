@@ -1,3 +1,19 @@
+const faceLibApis = {
+  getFaceList: params => DemoApi.request('GET', ZQLGLOBAL.face, undefined, params),
+  addFace: data => DemoApi.request('POST', ZQLGLOBAL.face, data),
+  editFace: data => DemoApi.request('PUT', ZQLGLOBAL.face, data),
+  delFace: data => DemoApi.request('DELETE', ZQLGLOBAL.face, data),
+  addImage: data => DemoApi.request('PUT', ZQLGLOBAL.image, data),
+  getGrpup: () => DemoApi.request('GET', ZQLGLOBAL.group, undefined, {alg: 'face'}),
+  addGroup: data => DemoApi.request('POST', ZQLGLOBAL.group, data),
+  editGroup: data => DemoApi.request('PUT', ZQLGLOBAL.group, data),
+  delGroup: data => DemoApi.request('DELETE', ZQLGLOBAL.group, data),
+  getToken: () => DemoApi.getToken(),
+  getTimestamp: () => DemoApi.request('GET', ZQLGLOBAL.getTime),
+  generateSignature: DemoApi.generateSignature,
+  generateRandomString: DemoApi.generateRandomString
+};
+
 
 class FaceLibManager {
   constructor() {
@@ -17,7 +33,6 @@ class FaceLibManager {
     this.initLayui();
     this.bindEvents();
     await this.getGroupData();
-    this.getTableData();
   }
 
   // 初始化Layui
@@ -40,7 +55,7 @@ class FaceLibManager {
           { field: 'update_time', width: 100, title: '更新时间', },
           { title: '操作', width: 200, toolbar: '#operationBar', fixed: 'right' }
         ]],
-        page: true,
+        page: false,
         limit: 10,
         limits: [10, 20, 50],
         height: 'full-220',
@@ -62,21 +77,20 @@ class FaceLibManager {
   }
 
   getGroupData() {
-    return new Promise((resolve, reject) => {
-      faceLibApis.getGrpup().then(res => {
+    return faceLibApis.getGrpup().then(res => {
         this.groupData = res.data.map(item => {
-          item.quality = item.ext.quality;
-          item.confidence = item.ext.confidence;
+          item.quality = (item.ext || {}).quality;
+          item.confidence = (item.ext || {}).confidence;
           return item
         });
-        if (this.groupData.length > 0) {
-          this.group_id = this.groupData[0].id;
-          resolve()
+        if (!this.groupData.some(item => item.id === this.group_id)) {
+          this.group_id = this.groupData.length ? this.groupData[0].id : '';
         }
+        this.page = 1;
         let el = document.querySelector("#group-container");
         let innerHTML = ''
         for (let i = 0; i < this.groupData.length; i++) {
-          if (i == 0) {
+          if (this.groupData[i].id === this.group_id) {
             innerHTML += `<li class="group active" id="${this.groupData[i].id}">
             ${this.groupData[i].name}
               <i class="layui-icon  layui-icon-edit" editId="${this.groupData[i].id}"></i>
@@ -92,6 +106,13 @@ class FaceLibManager {
         }
         el.innerHTML = innerHTML;
 
+        el.querySelectorAll('li.group').forEach(item => item.addEventListener('click', event => {
+          if (event.target.closest('i')) return;
+          this.group_id = item.id;
+          this.page = 1;
+          el.querySelectorAll('li.group').forEach(li => li.classList.toggle('active', li === item));
+          this.getTableData();
+        }));
         let editBtns = document.querySelectorAll("#group-container .layui-icon-edit");
         editBtns.forEach(editBtn => {
           editBtn.addEventListener('click', (e) => {
@@ -110,29 +131,42 @@ class FaceLibManager {
             })
           })
         })
-      })
-    })
-
+        return this.getTableData();
+    });
   }
   getTableData() {
-    faceLibApis.getFaceList({
-      page: this.page,
-      size: this.size,
-      group_id: this.group_id
-    }).then(res => {
-      this.data = res.data.data.map(item => {
-        // item.image = ZQLGLOBAL.serverIp + ':9092/staticdata' + item.image;
-        item.image = `http://${ZQLGLOBAL.serverIp}:9092/staticdata${item.image}`
-        return item
-      });
-      if (this.table) {
-        layui.use('table', () => {
-          layui.table.reload('dataTable', {
-            data: this.data
-          });
+    const groupId = this.group_id;
+    const requestId = this.listRequestId = (this.listRequestId || 0) + 1;
+    const request = groupId ? faceLibApis.getFaceList({page: this.page, size: this.size, group_id: groupId})
+      : Promise.resolve({data: {data: [], total: 0}});
+    return request.then(res => {
+      if (requestId !== this.listRequestId) return;
+      const total = res.data.total;
+      const lastPage = Math.max(1, Math.ceil(total / this.size));
+      if (this.page > lastPage) { this.page = lastPage; return this.getTableData(); }
+      this.data = res.data.data.map(item => Object.assign({}, item, {
+        image: item.image ? DemoApi.url('/staticdata' + item.image) : ''
+      }));
+      if (this.table) layui.table.reload('dataTable', {data: this.data});
+      layui.use('laypage', () => {
+        let pager = document.getElementById('face-pagination');
+        if (!pager) {
+          pager = document.createElement('div');
+          pager.id = 'face-pagination';
+          document.getElementById('dataTable').parentElement.appendChild(pager);
+        }
+        layui.laypage.render({
+          elem: 'face-pagination', count: total, curr: this.page, limit: this.size,
+          limits: [10, 20, 50], layout: ['count', 'prev', 'page', 'next', 'limit'],
+          jump: (obj, first) => {
+            if (first) return;
+            this.page = obj.curr;
+            this.size = obj.limit;
+            this.getTableData();
+          }
         });
-      }
-    })
+      });
+    });
   }
 
   // 绑定事件
@@ -142,6 +176,7 @@ class FaceLibManager {
       this.editGroupModal({
         name: '',
         quality: 0.35,
+        confidence: 0.5,
       }, 'add');
     });
 
@@ -210,7 +245,7 @@ class FaceLibManager {
             if (type == 'add') {
               faceLibApis.addGroup({
                 alg: 'face',
-                ext: { quality: formData.field.quality, confidence: formData.field.confidence },
+                ext: { quality: Number(formData.field.quality), confidence: Number(formData.field.confidence) },
                 name: formData.field.name
               }).then(res => {
                 this.getGroupData();
@@ -225,7 +260,7 @@ class FaceLibManager {
               faceLibApis.editGroup({
                 id: data.id,
                 alg: 'face',
-                ext: { quality: formData.field.quality, confidence: formData.field.confidence },
+                ext: { quality: Number(formData.field.quality), confidence: Number(formData.field.confidence) },
                 name: formData.field.name
               }).then(res => {
                 this.getGroupData();
@@ -319,6 +354,10 @@ class FaceLibManager {
 
   // 提交:添加/编辑
   handleFormSubmit(formData, data) {
+    if (!this.group_id) {
+      this.showNotification('请先添加并选择人脸分组', 'error');
+      return;
+    }
     // 验证数据
     if (!this.validateData(formData)) {
       return;
@@ -326,7 +365,7 @@ class FaceLibManager {
     let params = {
       group_id: this.group_id,
       name: formData.name,
-      age: formData.age,
+      age: formData.age === '' ? null : Number(formData.age),
       sex: formData.sex,
       desc: formData.desc,
       external_id: formData.external_id
@@ -424,230 +463,3 @@ layui.use(['table', 'layer', 'form'], () => {
 
 });
 
-const faceLibApis = {
-  getFaceList: (params) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.face}?page=${params.page}&size=${params.size}&group_id=${params.group_id}`,
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  addFace: (data) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "POST",
-        contentType: "application/json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.face}`,
-        data: JSON.stringify(data),
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  editFace: (data) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "PUT",
-        contentType: "application/json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.face}`,
-        data: JSON.stringify(data),
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  delFace: (data) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "DELETE",
-        contentType: "application/json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.face}`,
-        data: JSON.stringify(data),
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  addImage: (formdata) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "PUT",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.image}`,
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        data: formdata, // 使用FormData对象
-        processData: false,  // 告诉jQuery不要处理发送的数据
-        contentType: false,
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  getGrpup: () => {
-    let type = 'face';
-    // 获取人脸分组
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.group}?alg=${type}`,
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  addGroup: (data) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "POST",
-        contentType: "application/json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.group}`,
-        data: JSON.stringify(data),
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  editGroup: (data) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "PUT",
-        contentType: "application/json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.group}`,
-        data: JSON.stringify(data),
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  delGroup: (data) => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "DELETE",
-        contentType: "application/json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.group}`,
-        data: JSON.stringify(data),
-        beforeSend: function (xhr) {
-          xhr.setRequestHeader("Authorization", `Bearer ${ZQLGLOBAL.token}`);
-        },
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-
-  getToken: async () => {
-    var ak = ZQLGLOBAL.accessKey;
-    var sk = ZQLGLOBAL.accessSecret;
-    var timestampRes = await faceLibApis.getTimestamp();
-    let timestamp = timestampRes.data;
-    var nonce = faceLibApis.generateRandomString(10);
-    let signature = faceLibApis.generateSignature(ak, sk, timestamp, nonce)
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.getToken}?signature=${signature}&ak=${ak}&timestamp=${timestamp}&nonce=${nonce}`,
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  getTimestamp: () => {
-    return new Promise((resolve, reject) => {
-      $.ajax({
-        type: "GET",
-        dataType: "json",
-        url: `http://${ZQLGLOBAL.serverIp}${ZQLGLOBAL.getTime}`,
-        success: function (res) {
-          resolve(res)
-        },
-        error: function (err) {
-          reject(err)
-        }
-      });
-    })
-  },
-  generateSignature: (ak, sk, timestamp, nonce) => {
-    var message = `${ak}:${timestamp}:${nonce}`;
-    var hash = CryptoJS.HmacSHA256(message, sk);
-    var signature = CryptoJS.enc.Hex.stringify(hash);
-    return signature
-  },
-  generateRandomString(length) {
-    let result = '';
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-
-    for (let i = 0; i < length; i++) {
-      result += characters.charAt(Math.floor(Math.random() * characters.length));
-    }
-
-    return result;
-  }
-}
